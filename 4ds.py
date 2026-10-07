@@ -3,10 +3,11 @@ import pandas as pd
 import numpy as np
 import io
 import os
+import plotly.express as px
 
 # Konfigurácia stránky
 st.set_page_config(
-    page_title="4DS Oversupply",
+    page_title="4DS Oversupply Optimizer",
     page_icon="📦",
     layout="wide"
 )
@@ -79,7 +80,7 @@ if df is not None:
         if missing_cols:
             st.error(f"❌ V Exceli chýbajú tieto povinné stĺpce: {', '.join(missing_cols)}")
         else:
-            # Oprava číselných stĺpcov (ak sú v exceli ako text s čiarkou "0,009")
+            # Oprava číselných stĺpcov
             num_cols = ['Množstvo na lokácií', 'Skladom', 'Objem v M3', 'Predajnosť']
             for col in num_cols:
                 if df[col].dtype == 'object':
@@ -95,12 +96,9 @@ if df is not None:
                 'Množstvo na lokácií': 'sum'
             }).reset_index()
 
-            # Doplňovanie chýbajúcich verzií v Predajnosti (NaN -> 0)
             sku_df['Predajnosť'] = sku_df['Predajnosť'].fillna(0)
 
             # === VÝPOČTY PRE KAŽDÉ SKU ===
-            # 1. Denný predaj (ADS): Ak je Predajnosť > 0, použije sa reálny predaj. 
-            # Ak je <= 0, použije sa náhradná hodnota (napr. 5 ks / 30 dní)
             fallback_daily_sales = fallback_monthly_sales / 30.0
             
             sku_df['ADS'] = np.where(
@@ -109,25 +107,12 @@ if df is not None:
                 fallback_daily_sales
             )
             
-            # 2. Potrebná zásoba (ks)
             sku_df['Potrebná zásoba (ks)'] = sku_df['ADS'] * target_doh
-            
-            # 3. Nadzásoba v kusoch (nie záporná)
             sku_df['Nadzásoba (ks)'] = (sku_df['Skladom'] - sku_df['Potrebná zásoba (ks)']).clip(lower=0)
-            
-            # 4. Nadzásoba v m3
             sku_df['Nadzásoba (m3)'] = sku_df['Nadzásoba (ks)'] * sku_df['Objem v M3']
-            
-            # 5. Kusov na 1 paletu (1m3 / Objem v M3)
             sku_df['Kusov na palete'] = np.where(sku_df['Objem v M3'] > 0, np.floor(1 / sku_df['Objem v M3']), 0)
-            
-            # 6. Počet plných paliet na presun
             sku_df['Plné palety na presun'] = np.floor(sku_df['Nadzásoba (m3)']).astype(int)
-            
-            # 7. Celkový počet kusov na presun
             sku_df['Kusov na presun'] = sku_df['Plné palety na presun'] * sku_df['Kusov na palete']
-            
-            # 8. Nadzásoba v dňoch (Ležiak faktor)
             sku_df['Nadzásoba v dňoch'] = (sku_df['Nadzásoba (ks)'] / sku_df['ADS']).round(1)
 
             # === FILTROVANIE A ZORADENIE ===
@@ -149,6 +134,49 @@ if df is not None:
             col4.metric("Počet dotknutých SKU", f"{total_skus} SKU")
 
             st.divider()
+
+            # === GRAFY / VIZUALIZÁCIE ===
+            if not filtered_df.empty:
+                st.subheader("📈 Vizualizácia a analýza nadzásob")
+                g_col1, g_col2 = st.columns(2)
+
+                # GRAF 1: TOP 10 SKU podľa počtu paliet
+                with g_col1:
+                    top10_df = filtered_df.head(10).sort_values(by='Plné palety na presun', ascending=True)
+                    fig_top10 = px.bar(
+                        top10_df,
+                        x='Plné palety na presun',
+                        y='Produkt',
+                        orientation='h',
+                        title="Top 10 SKU s najväčším počtom paliet na presun",
+                        labels={'Plné palety na presun': 'Počet paliet (ks)', 'Produkt': 'SKU'},
+                        color='Plné palety na presun',
+                        color_continuous_scale='Blues'
+                    )
+                    fig_top10.update_layout(showlegend=False, height=380)
+                    st.plotly_chart(fig_top10, use_container_width=True)
+
+                # GRAF 2: Kategórie ležiakov podľa závažnosti
+                with g_col2:
+                    # Rozdelenie do kategórií
+                    bins = [0, 60, 180, 365, np.inf]
+                    labels = ['Mierna (30-60 dní)', 'Stredná (60-180 dní)', 'Vysoká (180-365 dní)', 'Kritická (365+ dní)']
+                    
+                    filtered_df['Kategória ležiaka'] = pd.cut(filtered_df['Nadzásoba v dňoch'], bins=bins, labels=labels)
+                    cat_summary = filtered_df.groupby('Kategória ležiaka', observed=False)['Plné palety na presun'].sum().reset_index()
+
+                    fig_pie = px.pie(
+                        cat_summary,
+                        values='Plné palety na presun',
+                        names='Kategória ležiaka',
+                        title="Rozdelenie paliet podľa veku ležiaka (DOH)",
+                        hole=0.4,
+                        color_discrete_sequence=px.colors.sequential.RdBu_r
+                    )
+                    fig_pie.update_layout(height=380)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+
+                st.divider()
 
             # === ZOBRAZENIE TABUĽKY ===
             st.subheader(f"📋 Zoznam produktov na presun do 4DS (Plné palety ≥ {min_pallets_to_move})")
