@@ -6,12 +6,12 @@ import os
 
 # Konfigurácia stránky
 st.set_page_config(
-    page_title="4DS Oversupply Optimizer",
+    page_title="4DS Oversupply",
     page_icon="📦",
     layout="wide"
 )
 
-st.title("📦 Presun nadzásoby do 4DS")
+st.title("📦 Optimizer presunu nadzásob do 4DS")
 st.markdown("Aplikácia na výpočet a výber plných paliet ($1\\text{ m}^3$) určených na presun do 4DS.")
 
 # --- BOČNÝ PANEL: NASTAVENIA ---
@@ -43,6 +43,14 @@ min_pallets_to_move = st.sidebar.number_input(
     min_value=1, 
     max_value=50, 
     value=1
+)
+
+fallback_monthly_sales = st.sidebar.number_input(
+    "Náhradná predajnosť pre nepredané produkty (ks/mesiac)",
+    min_value=1,
+    max_value=100,
+    value=5,
+    help="Ak produkt nemá žiadny predaj (0 ks), výpočet bude počítať s týmto odhadom predaja za mesiac."
 )
 
 # --- URČENIE ZDROJA DÁT ---
@@ -87,9 +95,19 @@ if df is not None:
                 'Množstvo na lokácií': 'sum'
             }).reset_index()
 
+            # Doplňovanie chýbajúcich verzií v Predajnosti (NaN -> 0)
+            sku_df['Predajnosť'] = sku_df['Predajnosť'].fillna(0)
+
             # === VÝPOČTY PRE KAŽDÉ SKU ===
-            # 1. Denný predaj (ADS)
-            sku_df['ADS'] = sku_df['Predajnosť'] / sales_period_days
+            # 1. Denný predaj (ADS): Ak je Predajnosť > 0, použije sa reálny predaj. 
+            # Ak je <= 0, použije sa náhradná hodnota (napr. 5 ks / 30 dní)
+            fallback_daily_sales = fallback_monthly_sales / 30.0
+            
+            sku_df['ADS'] = np.where(
+                sku_df['Predajnosť'] > 0, 
+                sku_df['Predajnosť'] / sales_period_days, 
+                fallback_daily_sales
+            )
             
             # 2. Potrebná zásoba (ks)
             sku_df['Potrebná zásoba (ks)'] = sku_df['ADS'] * target_doh
@@ -110,8 +128,7 @@ if df is not None:
             sku_df['Kusov na presun'] = sku_df['Plné palety na presun'] * sku_df['Kusov na palete']
             
             # 8. Nadzásoba v dňoch (Ležiak faktor)
-            sku_df['Nadzásoba v dňoch'] = np.where(sku_df['ADS'] > 0, sku_df['Nadzásoba (ks)'] / sku_df['ADS'], 9999)
-            sku_df['Nadzásoba v dňoch'] = sku_df['Nadzásoba v dňoch'].round(1)
+            sku_df['Nadzásoba v dňoch'] = (sku_df['Nadzásoba (ks)'] / sku_df['ADS']).round(1)
 
             # === FILTROVANIE A ZORADENIE ===
             filtered_df = sku_df[sku_df['Plné palety na presun'] >= min_pallets_to_move].copy()
