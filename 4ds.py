@@ -13,16 +13,24 @@ st.set_page_config(
 )
 
 st.title("📦 Optimizer presunu nadzásob do 4DS")
-st.markdown("Aplikácia na výpočet a výber plných paliet ($1\\text{ m}^3$) určených na presun do 4DS.")
+st.markdown("Aplikácia na výpočet nadzásob a nápočet hotových paliet zo **SWAP lokácií** určených na okamžitý presun do 4DS.")
 
 # --- BOČNÝ PANEL: NASTAVENIA ---
 st.sidebar.header("⚙️ Nastavenia výpočtu")
 
-# Upload súboru
+# Upload hlavného súboru
 uploaded_file = st.sidebar.file_uploader(
-    "Nahrataj Excel súbor (.xlsx)", 
+    "1. Nahrataj hlavný Excel (zásoby)", 
     type=["xlsx", "xls"]
 )
+
+# Upload SWAP súboru
+uploaded_swap_file = st.sidebar.file_uploader(
+    "2. Nahrataj SWAP Excel (voliteľné)", 
+    type=["xlsx", "xls"]
+)
+
+st.sidebar.divider()
 
 # Parametre
 target_doh = st.sidebar.number_input(
@@ -50,30 +58,43 @@ fallback_monthly_sales = st.sidebar.number_input(
     "Náhradná predajnosť pre nepredané produkty (ks/mesiac)",
     min_value=1,
     max_value=100,
-    value=5,
-    help="Ak produkt nemá žiadny predaj (0 ks), výpočet bude počítať s týmto odhadom predaja za mesiac."
+    value=5
 )
 
 # --- URČENIE ZDROJA DÁT ---
 df = None
+swap_df = None
 data_source_label = ""
+swap_source_label = ""
 
+# 1. Hlavný súbor
 if uploaded_file is not None:
     df = pd.read_excel(uploaded_file)
-    data_source_label = f"Nahranný súbor (`{uploaded_file.name}`)"
+    data_source_label = f"`{uploaded_file.name}`"
 elif os.path.exists("datatest.xlsx"):
     df = pd.read_excel("datatest.xlsx")
-    data_source_label = "Predvolené dáta (`datatest.xlsx`)"
+    data_source_label = "`datatest.xlsx` (predvolený)"
+
+# 2. SWAP súbor
+if uploaded_swap_file is not None:
+    swap_df = pd.read_excel(uploaded_swap_file)
+    swap_source_label = f"`{uploaded_swap_file.name}`"
+elif os.path.exists("swap.xlsx"):
+    swap_df = pd.read_excel("swap.xlsx")
+    swap_source_label = "`swap.xlsx` (predvolený)"
 
 # --- HLAVNÁ LOGIKA ---
 if df is not None:
     try:
-        st.sidebar.success(f"📁 Použité dáta: **{data_source_label}**")
+        st.sidebar.success(f"📁 Hlavné dáta: **{data_source_label}**")
+        if swap_df is not None:
+            st.sidebar.success(f"🔄 SWAP dáta: **{swap_source_label}**")
+        else:
+            st.sidebar.warning("⚠️ SWAP dáta neboli nájdené.")
         
-        # Očistenie názvov stĺpcov od medzier
+        # Očistenie názvov stĺpcov
         df.columns = df.columns.astype(str).str.strip()
         
-        # Kontrola povinných stĺpcov
         required_cols = ['Sklad', 'Lokace', 'Produkt', 'Množstvo na lokácií', 'Skladom', 'Objem v M3', 'Predajnosť']
         missing_cols = [col for col in required_cols if col not in df.columns]
         
@@ -98,6 +119,22 @@ if df is not None:
 
             sku_df['Predajnosť'] = sku_df['Predajnosť'].fillna(0)
 
+            # === SPRACOVANIE SWAP DÁT (AK EXISTUJÚ) ===
+            if swap_df is not None:
+                swap_df.columns = swap_df.columns.astype(str).str.strip()
+                # 1 riadok v SWAP exceli = 1 paleta na SWP lokácii
+                swap_summary = swap_df.groupby('Produkt').agg(
+                    Paliet_na_SWAP=('Lokacia', 'count'),
+                    SWAP_lokacie=('Lokacia', lambda x: ', '.join(x.dropna().astype(str).unique()))
+                ).reset_index()
+
+                sku_df = pd.merge(sku_df, swap_summary, on='Produkt', how='left')
+                sku_df['Paliet_na_SWAP'] = sku_df['Paliet_na_SWAP'].fillna(0).astype(int)
+                sku_df['SWAP_lokacie'] = sku_df['SWAP_lokacie'].fillna('-')
+            else:
+                sku_df['Paliet_na_SWAP'] = 0
+                sku_df['SWAP_lokacie'] = '-'
+
             # === VÝPOČTY PRE KAŽDÉ SKU ===
             fallback_daily_sales = fallback_monthly_sales / 30.0
             
@@ -115,66 +152,60 @@ if df is not None:
             sku_df['Kusov na presun'] = sku_df['Plné palety na presun'] * sku_df['Kusov na palete']
             sku_df['Nadzásoba v dňoch'] = (sku_df['Nadzásoba (ks)'] / sku_df['ADS']).round(1)
 
+            # Rozdelenie paliet na SWAP vs Štandardné lokácie
+            sku_df['Paliet zo SWAP (IHNEĎ)'] = np.minimum(sku_df['Plné palety na presun'], sku_df['Paliet_na_SWAP'])
+            sku_df['Paliet z bežných lokácií'] = sku_df['Plné palety na presun'] - sku_df['Paliet zo SWAP (IHNEĎ)']
+
             # === FILTROVANIE A ZORADENIE ===
             filtered_df = sku_df[sku_df['Plné palety na presun'] >= min_pallets_to_move].copy()
-            filtered_df = filtered_df.sort_values(by=['Plné palety na presun', 'Nadzásoba v dňoch'], ascending=[False, False])
+            filtered_df = filtered_df.sort_values(by=['Plné palety na presun', 'Paliet zo SWAP (IHNEĎ)'], ascending=[False, False])
 
             # === ZOBRAZENIE METRÍK ===
-            st.subheader("📊 Súhrn pre presun")
-            col1, col2, col3, col4 = st.columns(4)
+            st.subheader("📊 Súhrn pre presun do 4DS")
+            col1, col2, col3, col4, col5 = st.columns(5)
             
             total_pallets = filtered_df['Plné palety na presun'].sum()
-            total_items = filtered_df['Kusov na presun'].sum()
+            swap_pallets = filtered_df['Paliet zo SWAP (IHNEĎ)'].sum()
+            standard_pallets = filtered_df['Paliet z bežných lokácií'].sum()
             total_m3 = (filtered_df['Plné palety na presun'] * 1.0).sum()
             total_skus = len(filtered_df)
 
             col1.metric("Celkom paliet na presun", f"{total_pallets:,} pal".replace(",", " "))
-            col2.metric("Celkom objem", f"{total_m3:,.1f} m³".replace(",", " "))
-            col3.metric("Celkom kusov", f"{int(total_items):,} ks".replace(",", " "))
-            col4.metric("Počet dotknutých SKU", f"{total_skus} SKU")
+            col2.metric("⚡ IHNEĎ zo SWAP-u", f"{swap_pallets:,} pal".replace(",", " "), delta="Pripravené na odvoz", delta_color="normal")
+            col3.metric("📦 Z bežných lokácií", f"{standard_pallets:,} pal".replace(",", " "))
+            col4.metric("Celkový objem", f"{total_m3:,.1f} m³".replace(",", " "))
+            col5.metric("Počet dotknutých SKU", f"{total_skus} SKU")
 
             st.divider()
 
-            # === GRAFY / VIZUALIZÁCIE ===
+            # === GRAF: TOP 10 SKU PODĽA PALIET ===
             if not filtered_df.empty:
-                st.subheader("📈 Vizualizácia a analýza nadzásob")
-                g_col1, g_col2 = st.columns(2)
+                st.subheader("📈 Top 10 SKU: Rozdelenie paliet (SWAP vs Bežné lokácie)")
+                
+                top10_df = filtered_df.head(10).copy()
+                
+                # Preklopenie dát pre stacked bar chart
+                top10_melted = top10_df.melt(
+                    id_vars=['Produkt'], 
+                    value_vars=['Paliet zo SWAP (IHNEĎ)', 'Paliet z bežných lokácií'],
+                    var_name='Typ lokácie', 
+                    value_name='Počet paliet'
+                )
 
-                # GRAF 1: TOP 10 SKU podľa počtu paliet
-                with g_col1:
-                    top10_df = filtered_df.head(10).sort_values(by='Plné palety na presun', ascending=True)
-                    fig_top10 = px.bar(
-                        top10_df,
-                        x='Plné palety na presun',
-                        y='Produkt',
-                        orientation='h',
-                        title="Top 10 SKU s najväčším počtom paliet na presun",
-                        labels={'Plné palety na presun': 'Počet paliet (ks)', 'Produkt': 'SKU'},
-                        color='Plné palety na presun',
-                        color_continuous_scale='Blues'
-                    )
-                    fig_top10.update_layout(showlegend=False, height=380)
-                    st.plotly_chart(fig_top10, use_container_width=True)
-
-                # GRAF 2: Kategórie ležiakov podľa závažnosti
-                with g_col2:
-                    # Rozdelenie do kategórií
-                    bins = [0, 60, 180, 365, np.inf]
-                    labels = ['Mierna (30-60 dní)', 'Stredná (60-180 dní)', 'Vysoká (180-365 dní)', 'Kritická (365+ dní)']
-                    
-                    filtered_df['Kategória ležiaka'] = pd.cut(filtered_df['Nadzásoba v dňoch'], bins=bins, labels=labels)
-                    cat_summary = filtered_df.groupby('Kategória ležiaka', observed=False)['Plné palety na presun'].sum().reset_index()
-
-                    fig_pie = px.pie(
-                        cat_summary,
-                        values='Plné palety na presun',
-                        names='Kategória ležiaka',
-                        title="Rozdelenie paliet podľa veku ležiaka (DOH)",
-                        hole=0.4,
-                        color_discrete_sequence=px.colors.sequential.RdBu_r
-                    )
-                    fig_pie.update_layout(height=380)
-                    st.plotly_chart(fig_pie, use_container_width=True)
+                fig_stack = px.bar(
+                    top10_melted,
+                    x='Počet paliet',
+                    y='Produkt',
+                    color='Typ lokácie',
+                    orientation='h',
+                    title="Top 10 SKU určených na presun",
+                    color_discrete_map={
+                        'Paliet zo SWAP (IHNEĎ)': '#2ca02c',  # Zelená pre SWAP
+                        'Paliet z bežných lokácií': '#1f77b4' # Modrá pre bežné
+                    }
+                )
+                fig_stack.update_layout(height=400, yaxis={'categoryorder':'total ascending'})
+                st.plotly_chart(fig_stack, use_container_width=True)
 
                 st.divider()
 
@@ -182,13 +213,20 @@ if df is not None:
             st.subheader(f"📋 Zoznam produktov na presun do 4DS (Plné palety ≥ {min_pallets_to_move})")
             
             display_cols = [
-                'Sklad', 'Produkt', 'Lokace', 'Skladom', 
-                'Predajnosť', 'Kusov na palete', 'Nadzásoba v dňoch', 
-                'Plné palety na presun', 'Kusov na presun'
+                'Sklad', 'Produkt', 'Plné palety na presun', 
+                'Paliet zo SWAP (IHNEĎ)', 'SWAP_lokacie', 
+                'Paliet z bežných lokácií', 'Lokace', 
+                'Skladom', 'Nadzásoba v dňoch', 'Kusov na presun'
             ]
             
+            # Premenovanie stĺpcov pre prehľadnejšiu tabuľku
+            rename_dict = {
+                'SWAP_lokacie': 'SWAP Lokácie (IHNEĎ)',
+                'Lokace': 'Bežné Lokácie'
+            }
+            
             st.dataframe(
-                filtered_df[display_cols],
+                filtered_df[display_cols].rename(columns=rename_dict),
                 use_container_width=True,
                 hide_index=True
             )
@@ -210,4 +248,4 @@ if df is not None:
         st.error(f"⚠️ Nastal problém pri spracovaní súboru: {e}")
 
 else:
-    st.info("👈 Nahraj Excel súbor v ľavom menu alebo pridaj `datatest.xlsx` do repozitára pre zahájenie výpočtu.")
+    st.info("👈 Nahraj Excel súbory v ľavom menu alebo pridaj `datatest.xlsx` a `swap.xlsx` do repozitára.")
