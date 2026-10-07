@@ -82,6 +82,37 @@ if uploaded_swap_file is not None:
 elif os.path.exists("swap.xlsx"):
     swap_df = pd.read_excel("swap.xlsx")
     swap_source_label = "`swap.xlsx` (predvolený)"
+elif os.path.exists("swp.xlsx"):
+    swap_df = pd.read_excel("swp.xlsx")
+    swap_source_label = "`swp.xlsx` (predvolený)"
+
+# === SPRACOVANIE SWAP DÁT & GEOSIZE FILTER ===
+selected_geosizes = []
+geosize_col = None
+
+if swap_df is not None:
+    swap_df.columns = swap_df.columns.astype(str).str.strip()
+    # Detekcia stĺpca GEOSIZE
+    for col in swap_df.columns:
+        if col.upper() == 'GEOSIZE':
+            geosize_col = col
+            break
+
+    if geosize_col:
+        unique_geosizes = swap_df[geosize_col].dropna().unique().tolist()
+        st.sidebar.divider()
+        st.sidebar.subheader("📐 Filter podla GEOSIZE (SWAP)")
+        selected_geosizes = st.sidebar.multiselect(
+            "Vyber požadované GEOSIZE:",
+            options=unique_geosizes,
+            default=unique_geosizes
+        )
+        # Filtrovanie SWAP dát podľa vybraného GEOSIZE
+        swap_df_filtered = swap_df[swap_df[geosize_col].isin(selected_geosizes)].copy()
+    else:
+        swap_df_filtered = swap_df.copy()
+else:
+    swap_df_filtered = None
 
 # --- HLAVNÁ LOGIKA ---
 if df is not None:
@@ -119,21 +150,28 @@ if df is not None:
 
             sku_df['Predajnosť'] = sku_df['Predajnosť'].fillna(0)
 
-            # === SPRACOVANIE SWAP DÁT (AK EXISTUJÚ) ===
-            if swap_df is not None:
-                swap_df.columns = swap_df.columns.astype(str).str.strip()
-                # 1 riadok v SWAP exceli = 1 paleta na SWP lokácii
-                swap_summary = swap_df.groupby('Produkt').agg(
-                    Paliet_na_SWAP=('Lokacia', 'count'),
-                    SWAP_lokacie=('Lokacia', lambda x: ', '.join(x.dropna().astype(str).unique()))
-                ).reset_index()
+            # === SPRACOVANIE SWAP DÁT ===
+            if swap_df_filtered is not None and not swap_df_filtered.empty:
+                agg_dict = {
+                    'Paliet_na_SWAP': ('Lokacia', 'count'),
+                    'SWAP_lokacie': ('Lokacia', lambda x: ', '.join(x.dropna().astype(str).unique()))
+                }
+                if geosize_col:
+                    agg_dict['SWAP_geosize'] = (geosize_col, lambda x: ', '.join(x.dropna().astype(str).unique()))
+
+                swap_summary = swap_df_filtered.groupby('Produkt').agg(**agg_dict).reset_index()
 
                 sku_df = pd.merge(sku_df, swap_summary, on='Produkt', how='left')
                 sku_df['Paliet_na_SWAP'] = sku_df['Paliet_na_SWAP'].fillna(0).astype(int)
                 sku_df['SWAP_lokacie'] = sku_df['SWAP_lokacie'].fillna('-')
+                if geosize_col:
+                    sku_df['SWAP_geosize'] = sku_df['SWAP_geosize'].fillna('-')
+                else:
+                    sku_df['SWAP_geosize'] = '-'
             else:
                 sku_df['Paliet_na_SWAP'] = 0
                 sku_df['SWAP_lokacie'] = '-'
+                sku_df['SWAP_geosize'] = '-'
 
             # === VÝPOČTY PRE KAŽDÉ SKU ===
             fallback_daily_sales = fallback_monthly_sales / 30.0
@@ -178,34 +216,53 @@ if df is not None:
 
             st.divider()
 
-            # === GRAF: TOP 10 SKU PODĽA PALIET ===
+            # === ANALÝZA GEOSIZE a TOP 10 ===
             if not filtered_df.empty:
-                st.subheader("📈 Top 10 SKU: Rozdelenie paliet (SWAP vs Bežné lokácie)")
-                
-                top10_df = filtered_df.head(10).copy()
-                
-                # Preklopenie dát pre stacked bar chart
-                top10_melted = top10_df.melt(
-                    id_vars=['Produkt'], 
-                    value_vars=['Paliet zo SWAP (IHNEĎ)', 'Paliet z bežných lokácií'],
-                    var_name='Typ lokácie', 
-                    value_name='Počet paliet'
-                )
+                g_col1, g_col2 = st.columns([3, 2])
 
-                fig_stack = px.bar(
-                    top10_melted,
-                    x='Počet paliet',
-                    y='Produkt',
-                    color='Typ lokácie',
-                    orientation='h',
-                    title="Top 10 SKU určených na presun",
-                    color_discrete_map={
-                        'Paliet zo SWAP (IHNEĎ)': '#2ca02c',  # Zelená pre SWAP
-                        'Paliet z bežných lokácií': '#1f77b4' # Modrá pre bežné
-                    }
-                )
-                fig_stack.update_layout(height=400, yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig_stack, use_container_width=True)
+                with g_col1:
+                    st.subheader("📈 Top 10 SKU: SWAP vs Bežné lokácie")
+                    top10_df = filtered_df.head(10).copy()
+                    top10_melted = top10_df.melt(
+                        id_vars=['Produkt'], 
+                        value_vars=['Paliet zo SWAP (IHNEĎ)', 'Paliet z bežných lokácií'],
+                        var_name='Typ lokácie', 
+                        value_name='Počet paliet'
+                    )
+
+                    fig_stack = px.bar(
+                        top10_melted,
+                        x='Počet paliet',
+                        y='Produkt',
+                        color='Typ lokácie',
+                        orientation='h',
+                        color_discrete_map={
+                            'Paliet zo SWAP (IHNEĎ)': '#2ca02c',
+                            'Paliet z bežných lokácií': '#1f77b4'
+                        }
+                    )
+                    fig_stack.update_layout(height=350, yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_stack, use_container_width=True)
+
+                with g_col2:
+                    st.subheader("📐 Rozpad SWAP paliet podľa GEOSIZE")
+                    if geosize_col and swap_df_filtered is not None and not swap_df_filtered.empty:
+                        # Prepojenie filtrovaných produktov so SWAP detailom pre presný počet paliet per GEOSIZE
+                        swap_in_scope = swap_df_filtered[swap_df_filtered['Produkt'].isin(filtered_df['Produkt'])]
+                        geosize_summary = swap_in_scope.groupby(geosize_col).size().reset_index(name='Počet paliet')
+                        
+                        fig_geo = px.bar(
+                            geosize_summary,
+                            x=geosize_col,
+                            y='Počet paliet',
+                            text='Počet paliet',
+                            color=geosize_col,
+                            color_discrete_sequence=px.colors.qualitative.Safe
+                        )
+                        fig_geo.update_layout(height=350, showlegend=False)
+                        st.plotly_chart(fig_geo, use_container_width=True)
+                    else:
+                        st.info("Žiadne GEOSIZE dáta na zobrazenie.")
 
                 st.divider()
 
@@ -214,13 +271,13 @@ if df is not None:
             
             display_cols = [
                 'Sklad', 'Produkt', 'Plné palety na presun', 
-                'Paliet zo SWAP (IHNEĎ)', 'SWAP_lokacie', 
+                'Paliet zo SWAP (IHNEĎ)', 'SWAP_geosize', 'SWAP_lokacie', 
                 'Paliet z bežných lokácií', 'Lokace', 
                 'Skladom', 'Nadzásoba v dňoch', 'Kusov na presun'
             ]
             
-            # Premenovanie stĺpcov pre prehľadnejšiu tabuľku
             rename_dict = {
+                'SWAP_geosize': 'SWAP GEOSIZE',
                 'SWAP_lokacie': 'SWAP Lokácie (IHNEĎ)',
                 'Lokace': 'Bežné Lokácie'
             }
@@ -248,4 +305,4 @@ if df is not None:
         st.error(f"⚠️ Nastal problém pri spracovaní súboru: {e}")
 
 else:
-    st.info("👈 Nahraj Excel súbory v ľavom menu alebo pridaj `datatest.xlsx` a `swap.xlsx` do repozitára.")
+    st.info("👈 Nahraj Excel súbory v ľavom menu alebo pridaj `datatest.xlsx` a `swap.xlsx` / `swp.xlsx` do repozitára.")
