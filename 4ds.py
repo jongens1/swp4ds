@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📦 Optimizer presunu nadzásob do 4DS")
+st.title("📦 Presun nadzásoby do 4DS")
 st.markdown("Aplikácia na výpočet a výber plných paliet ($1\\text{ m}^3$) určených na presun do 4DS.")
 
 # --- BOČNÝ PANEL: NASTAVENIA ---
