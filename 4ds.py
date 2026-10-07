@@ -60,37 +60,51 @@ if uploaded_file is not None:
         if missing_cols:
             st.error(f"❌ V Exceli chýbajú tieto povinné stĺpce: {', '.join(missing_cols)}")
         else:
-            # === VÝPOČTY ===
+            # Oprava číselných stĺpcov (ak sú v exceli ako text s čiarkou "0,009")
+            num_cols = ['Množstvo na lokácií', 'Skladom', 'Objem v M3', 'Predajnosť']
+            for col in num_cols:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].astype(str).str.replace(',', '.').str.strip().astype(float)
+
+            # === ZSKUPENIE PODĽA PRODUKTU (SKU) ===
+            # Aby sme nepočítali ten istý produkt viackrát pre každú lokáciu
+            sku_df = df.groupby('Produkt').agg({
+                'Sklad': 'first',
+                'Lokace': lambda x: ', '.join(x.dropna().astype(str).unique()), # Spojí lokácie do jedného textu
+                'Skladom': 'first',           # Celková zásoba za produkt
+                'Objem v M3': 'first',        # Objem jedného kusu
+                'Predajnosť': 'first',        # Predaje za obdobie
+                'Množstvo na lokácií': 'sum'  # Součet na lokáciach pre kontrolu
+            }).reset_index()
+
+            # === VÝPOČTY PRE KAŽDÉ SKU ===
             # 1. Denný predaj (ADS)
-            df['ADS'] = df['Predajnosť'] / sales_period_days
+            sku_df['ADS'] = sku_df['Predajnosť'] / sales_period_days
             
             # 2. Potrebná zásoba (ks)
-            df['Potrebná zásoba (ks)'] = df['ADS'] * target_doh
+            sku_df['Potrebná zásoba (ks)'] = sku_df['ADS'] * target_doh
             
             # 3. Nadzásoba v kusoch (nie záporná)
-            df['Nadzásoba (ks)'] = (df['Skladom'] - df['Potrebná zásoba (ks)']).clip(lower=0)
+            sku_df['Nadzásoba (ks)'] = (sku_df['Skladom'] - sku_df['Potrebná zásoba (ks)']).clip(lower=0)
             
             # 4. Nadzásoba v m3
-            df['Nadzásoba (m3)'] = df['Nadzásoba (ks)'] * df['Objem v M3']
+            sku_df['Nadzásoba (m3)'] = sku_df['Nadzásoba (ks)'] * sku_df['Objem v M3']
             
             # 5. Kusov na 1 paletu (1m3 / Objem v M3)
-            df['Kusov na palete'] = np.where(df['Objem v M3'] > 0, np.floor(1 / df['Objem v M3']), 0)
+            sku_df['Kusov na palete'] = np.where(sku_df['Objem v M3'] > 0, np.floor(1 / sku_df['Objem v M3']), 0)
             
-            # 6. Počet plných paliet na presun (Floor z m3 nadzásoby)
-            df['Plné palety na presun'] = np.floor(df['Nadzásoba (m3)']).astype(int)
+            # 6. Počet plných paliet na presun
+            sku_df['Plné palety na presun'] = np.floor(sku_df['Nadzásoba (m3)']).astype(int)
             
-            # 7. Celkový počet kusov na presun (Plné palety * Kusov na palete)
-            df['Kusov na presun'] = df['Plné palety na presun'] * df['Kusov na palete']
+            # 7. Celkový počet kusov na presun
+            sku_df['Kusov na presun'] = sku_df['Plné palety na presun'] * sku_df['Kusov na palete']
             
             # 8. Nadzásoba v dňoch (Ležiak faktor)
-            df['Nadzásoba v dňoch'] = np.where(df['ADS'] > 0, df['Nadzásoba (ks)'] / df['ADS'], 9999)
-            df['Nadzásoba v dňoch'] = df['Nadzásoba v dňoch'].round(1)
+            sku_df['Nadzásoba v dňoch'] = np.where(sku_df['ADS'] > 0, sku_df['Nadzásoba (ks)'] / sku_df['ADS'], 9999)
+            sku_df['Nadzásoba v dňoch'] = sku_df['Nadzásoba v dňoch'].round(1)
 
             # === FILTROVANIE A ZORADENIE ===
-            # Vyberieme len riadky, kde dáva zmysel presunúť aspoň požadovaný počet plných paliet
-            filtered_df = df[df['Plné palety na presun'] >= min_pallets_to_move].copy()
-            
-            # Zoradenie: Najprv podľa počtu paliet na presun (zostupne), potom podľa nadzásoby v dňoch
+            filtered_df = sku_df[sku_df['Plné palety na presun'] >= min_pallets_to_move].copy()
             filtered_df = filtered_df.sort_values(by=['Plné palety na presun', 'Nadzásoba v dňoch'], ascending=[False, False])
 
             # === ZOBRAZENIE METRÍK ===
@@ -102,7 +116,7 @@ if uploaded_file is not None:
             total_m3 = (filtered_df['Plné palety na presun'] * 1.0).sum()
             total_skus = len(filtered_df)
 
-            col1.metric("Celkom paliet na presun", f"{total_pallets:,} ks".replace(",", " "))
+            col1.metric("Celkom paliet na presun", f"{total_pallets:,} pal".replace(",", " "))
             col2.metric("Celkom objem", f"{total_m3:,.1f} m³".replace(",", " "))
             col3.metric("Celkom kusov", f"{int(total_items):,} ks".replace(",", " "))
             col4.metric("Počet dotknutých SKU", f"{total_skus} SKU")
@@ -110,11 +124,10 @@ if uploaded_file is not None:
             st.divider()
 
             # === ZOBRAZENIE TABUĽKY ===
-            st.subheader(f"📋 Zoznam produktov na presun do 4DS (Plné palety >= {min_pallets_to_move})")
+            st.subheader(f"📋 Zoznam produktov na presun do 4DS (Plné palety ≥ {min_pallets_to_move})")
             
-            # Výber a premenovanie stĺpcov pre zobrazenie
             display_cols = [
-                'Sklad', 'Lokace', 'Produkt', 'Množstvo na lokácií', 'Skladom', 
+                'Sklad', 'Produkt', 'Lokace', 'Skladom', 
                 'Predajnosť', 'Kusov na palete', 'Nadzásoba v dňoch', 
                 'Plné palety na presun', 'Kusov na presun'
             ]
