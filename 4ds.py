@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📦 Optimizer presunu nadzásob do 4DS")
+st.title("📦 Preskladnenie nadzásoby do 4DS")
 st.markdown("Aplikácia na výpočet nadzásob a nápočet hotových paliet zo **SWAP lokácií** určených na okamžitý presun do 4DS.")
 
 # --- BOČNÝ PANEL: NASTAVENIA ---
