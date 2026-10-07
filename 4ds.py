@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import os
 
 # Konfigurácia stránky
 st.set_page_config(
@@ -44,11 +45,21 @@ min_pallets_to_move = st.sidebar.number_input(
     value=1
 )
 
-# --- HLAVNÁ LOGIKA ---
+# --- URČENIE ZDROJA DÁT ---
+df = None
+data_source_label = ""
+
 if uploaded_file is not None:
+    df = pd.read_excel(uploaded_file)
+    data_source_label = f"Nahranný súbor (`{uploaded_file.name}`)"
+elif os.path.exists("datatest.xlsx"):
+    df = pd.read_excel("datatest.xlsx")
+    data_source_label = "Predvolené dáta (`datatest.xlsx`)"
+
+# --- HLAVNÁ LOGIKA ---
+if df is not None:
     try:
-        # Načítanie dát
-        df = pd.read_excel(uploaded_file)
+        st.sidebar.success(f"📁 Použité dáta: **{data_source_label}**")
         
         # Očistenie názvov stĺpcov od medzier
         df.columns = df.columns.astype(str).str.strip()
@@ -67,14 +78,13 @@ if uploaded_file is not None:
                     df[col] = df[col].astype(str).str.replace(',', '.').str.strip().astype(float)
 
             # === ZSKUPENIE PODĽA PRODUKTU (SKU) ===
-            # Aby sme nepočítali ten istý produkt viackrát pre každú lokáciu
             sku_df = df.groupby('Produkt').agg({
                 'Sklad': 'first',
-                'Lokace': lambda x: ', '.join(x.dropna().astype(str).unique()), # Spojí lokácie do jedného textu
-                'Skladom': 'first',           # Celková zásoba za produkt
-                'Objem v M3': 'first',        # Objem jedného kusu
-                'Predajnosť': 'first',        # Predaje za obdobie
-                'Množstvo na lokácií': 'sum'  # Součet na lokáciach pre kontrolu
+                'Lokace': lambda x: ', '.join(x.dropna().astype(str).unique()),
+                'Skladom': 'first',
+                'Objem v M3': 'first',
+                'Predajnosť': 'first',
+                'Množstvo na lokácií': 'sum'
             }).reset_index()
 
             # === VÝPOČTY PRE KAŽDÉ SKU ===
@@ -155,4 +165,4 @@ if uploaded_file is not None:
         st.error(f"⚠️ Nastal problém pri spracovaní súboru: {e}")
 
 else:
-    st.info("👈 Nahraj Excel súbor v ľavom menu pre zahájenie výpočtu.")
+    st.info("👈 Nahraj Excel súbor v ľavom menu alebo pridaj `datatest.xlsx` do repozitára pre zahájenie výpočtu.")
