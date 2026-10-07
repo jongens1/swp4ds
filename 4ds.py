@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📦 Preskladňovanie do 4DS")
+st.title("📦 Optimizer presunu nadzásob do 4DS")
 st.markdown("Aplikácia na výpočet nadzásob a nápočet hotových paliet zo **SWAP lokácií** určených na okamžitý presun do 4DS.")
 
 # --- BOČNÝ PANEL: NASTAVENIA ---
@@ -20,13 +20,13 @@ st.sidebar.header("⚙️ Nastavenia výpočtu")
 
 # Upload hlavného súboru
 uploaded_file = st.sidebar.file_uploader(
-    "1. Nahrataj hlavný Excel (zásoby)", 
+    "1. Nahraj hlavný Excel (zásoby)", 
     type=["xlsx", "xls"]
 )
 
 # Upload SWAP súboru
 uploaded_swap_file = st.sidebar.file_uploader(
-    "2. Nahrataj SWAP Excel (voliteľné)", 
+    "2. Nahraj SWAP Excel (voliteľné)", 
     type=["xlsx", "xls"]
 )
 
@@ -61,6 +61,14 @@ fallback_monthly_sales = st.sidebar.number_input(
     value=5
 )
 
+min_stock_zero_sales = st.sidebar.number_input(
+    "🛡️ Min. zásoba na lokácii pri 0 predaji (ks)",
+    min_value=0,
+    max_value=1000,
+    value=20,
+    help="Ak produkt nemá žiadny predaj (0 ks), na hlavnej lokácii sa vždy ponechá minimálne toto množstvo kusov."
+)
+
 # --- URČENIE ZDROJA DÁT ---
 df = None
 swap_df = None
@@ -92,7 +100,6 @@ geosize_col = None
 
 if swap_df is not None:
     swap_df.columns = swap_df.columns.astype(str).str.strip()
-    # Detekcia stĺpca GEOSIZE
     for col in swap_df.columns:
         if col.upper() == 'GEOSIZE':
             geosize_col = col
@@ -101,13 +108,12 @@ if swap_df is not None:
     if geosize_col:
         unique_geosizes = swap_df[geosize_col].dropna().unique().tolist()
         st.sidebar.divider()
-        st.sidebar.subheader("📐 Filter podla GEOSIZE (SWAP)")
+        st.sidebar.subheader("📐 Filter podľa GEOSIZE (SWAP)")
         selected_geosizes = st.sidebar.multiselect(
             "Vyber požadované GEOSIZE:",
             options=unique_geosizes,
             default=unique_geosizes
         )
-        # Filtrovanie SWAP dát podľa vybraného GEOSIZE
         swap_df_filtered = swap_df[swap_df[geosize_col].isin(selected_geosizes)].copy()
     else:
         swap_df_filtered = swap_df.copy()
@@ -182,7 +188,17 @@ if df is not None:
                 fallback_daily_sales
             )
             
+            # Vypočítame základnú potrebnú zásobu
             sku_df['Potrebná zásoba (ks)'] = sku_df['ADS'] * target_doh
+            
+            # PODMIENKA: Ak je Predajnosť <= 0, na sklade musí zostávať minimálne min_stock_zero_sales (20 ks)
+            sku_df['Potrebná zásoba (ks)'] = np.where(
+                sku_df['Predajnosť'] <= 0,
+                np.maximum(sku_df['Potrebná zásoba (ks)'], min_stock_zero_sales),
+                sku_df['Potrebná zásoba (ks)']
+            )
+            
+            # Nadzásoba
             sku_df['Nadzásoba (ks)'] = (sku_df['Skladom'] - sku_df['Potrebná zásoba (ks)']).clip(lower=0)
             sku_df['Nadzásoba (m3)'] = sku_df['Nadzásoba (ks)'] * sku_df['Objem v M3']
             sku_df['Kusov na palete'] = np.where(sku_df['Objem v M3'] > 0, np.floor(1 / sku_df['Objem v M3']), 0)
@@ -247,7 +263,6 @@ if df is not None:
                 with g_col2:
                     st.subheader("📐 Rozpad SWAP paliet podľa GEOSIZE")
                     if geosize_col and swap_df_filtered is not None and not swap_df_filtered.empty:
-                        # Prepojenie filtrovaných produktov so SWAP detailom pre presný počet paliet per GEOSIZE
                         swap_in_scope = swap_df_filtered[swap_df_filtered['Produkt'].isin(filtered_df['Produkt'])]
                         geosize_summary = swap_in_scope.groupby(geosize_col).size().reset_index(name='Počet paliet')
                         
