@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📦 Optimizer presunu & Simulátor spätného toku 4DS")
+st.title("📦 Riadenie toku pailet z 4DS a do 4DS")
 st.markdown("Aplikácia na optimalizáciu nadzásob, využitie SWAP lokácií a **simuláciu časového vývoja zásob a spätných závozov**.")
 
 # --- BOČNÝ PANEL: NASTAVENIA ---
