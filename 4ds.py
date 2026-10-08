@@ -60,7 +60,7 @@ min_stock_zero_sales = st.sidebar.number_input(
 )
 
 st.sidebar.divider()
-st.sidebar.subheader("🔮 Parametre Simulácie & Dopravy")
+st.sidebar.subheader("🔮 Simulácia spätného toku")
 
 daily_logistics_capacity = st.sidebar.number_input(
     "🚚 Max. kapacita prepravy (paliet / deň)",
@@ -392,12 +392,12 @@ if df is not None:
                 s_col1.metric("Doba vývozu do 4DS", f"{days_needed_for_outbound} dní")
                 s_col2.metric("Prvý spätný závoz o", f"{first_recall_day} dní" if isinstance(first_recall_day, (int, float, np.integer)) else first_recall_day)
                 s_col3.metric("Paliet na spätný závoz (v horizonte)", f"{recall_in_scope['Plné palety na presun'].count()} pal")
-                s_col4.metric("Dni s preťažením dopravy", f"{overloaded_days} dní", delta="⚠️ Pozor" if overloaded_days > 0 else "OK", delta_color="inverse" if overloaded_days > 0 else "normal")
+                s_col4.metric("Dni s preťažením kapacity", f"{overloaded_days} dní", delta="⚠️ Pozor" if overloaded_days > 0 else "OK", delta_color="inverse" if overloaded_days > 0 else "normal")
 
                 st.divider()
 
                 # === GRAF VYŤAŽENIA DOPRAVY V ČASE ===
-                st.subheader("📊 Denné vyťaženie dopravy (Vývoz vs Spätný tok)")
+                st.subheader("📊 Denné vyťaženie (Vývoz vs Spätný tok)")
                 
                 fig_timeline = go.Figure()
                 
