@@ -82,6 +82,8 @@ sim_horizon_days = st.sidebar.number_input(
 # --- URČENIE ZDROJA DÁT ---
 df = None
 swap_df = None
+swap_source = None
+excluded_size_products = set()
 data_source_label = ""
 swap_source_label = ""
 
@@ -93,14 +95,43 @@ elif os.path.exists("datatest.xlsx"):
     data_source_label = "`datatest.xlsx` (predvolený)"
 
 if uploaded_swap_file is not None:
-    swap_df = pd.read_excel(uploaded_swap_file)
+    swap_source = uploaded_swap_file
     swap_source_label = f"`{uploaded_swap_file.name}`"
 elif os.path.exists("swap.xlsx"):
-    swap_df = pd.read_excel("swap.xlsx")
+    swap_source = "swap.xlsx"
     swap_source_label = "`swap.xlsx` (predvolený)"
 elif os.path.exists("swp.xlsx"):
-    swap_df = pd.read_excel("swp.xlsx")
+    swap_source = "swp.xlsx"
     swap_source_label = "`swp.xlsx` (predvolený)"
+
+# === FILTER PRODUKTOV PODĽA ROZMEROV ===
+if swap_source is not None:
+    with pd.ExcelFile(swap_source) as swap_excel:
+        swap_df = pd.read_excel(swap_excel, sheet_name=0)
+        if "Rozmery Produktov" in swap_excel.sheet_names:
+            dimensions_df = pd.read_excel(swap_excel, sheet_name="Rozmery Produktov")
+            dimensions_df.columns = dimensions_df.columns.astype(str).str.strip().str.casefold()
+            dimension_cols = ["size1", "size2", "size3"]
+            if all(col in dimensions_df.columns for col in ["produkt", *dimension_cols]):
+                sizes = dimensions_df[dimension_cols].apply(
+                    lambda col: pd.to_numeric(
+                        col.astype(str).str.strip().str.replace(",", ".", regex=False),
+                        errors="coerce"
+                    )
+                )
+                excluded_size_products = set(
+                    dimensions_df.loc[sizes.gt(120).any(axis=1), "produkt"]
+                    .dropna().astype(str).str.strip()
+                )
+            else:
+                st.sidebar.warning(
+                    "Filter rozmerov sa nepoužil: v hárku Rozmery Produktov "
+                    "chýba stĺpec Produkt, Size1, Size2 alebo Size3."
+                )
+        else:
+            st.sidebar.warning(
+                "Filter rozmerov sa nepoužil: v SWAP Exceli chýba hárok Rozmery Produktov."
+            )
 
 # === SPRACOVANIE SWAP DÁT & GEOSIZE FILTER ===
 selected_geosizes = []
@@ -158,6 +189,11 @@ if df is not None:
             }).reset_index()
 
             sku_df['Predajnosť'] = sku_df['Predajnosť'].fillna(0)
+
+            # Produkt s ktorýmkoľvek rozmerom > 120 nevstupuje do návrhu ani simulácie.
+            sku_df = sku_df[
+                ~sku_df['Produkt'].astype(str).str.strip().isin(excluded_size_products)
+            ].copy()
 
             # === SPRACOVANIE SWAP DÁT ===
             if swap_df_filtered is not None and not swap_df_filtered.empty:
