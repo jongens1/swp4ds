@@ -38,6 +38,18 @@ lokácie. Po každom návrate sa zohľadní privezené množstvo všetkých prod
 a vypočíta sa termín ďalšej lokácie. Neodhaduje sa počet kusov cez m³.
 Lokácia s produktom bez predajnosti sa označí a automatický plán ju vynechá.
 
+V záložke je samostatný parameter **Cieľová zásoba na primári po spätnom
+presune (dni)**, predvolene **30 dní**. Hranica spätného závozu naďalej určuje,
+kedy začať návrat podľa spoločného pokrytia primáru a SWAP-u. Veľkosť závozu
+určuje nový cieľ: počet celých lokácií potrebných na pokrytie samotného primáru
+aspoň na zvolený počet dní. SWAP sa do cieľa nezapočítava. Pred závozom sa
+odpočíta očakávaný predaj do jeho termínu (primár sa spotrebúva pred SWAP-om).
+Celé lokácie sa vyberajú podľa názvu lokácie, vrátane všetkých ich produktov.
+Ostatné produkty zmiešanej lokácie sa vezú spolu; cieľ sa vyhodnocuje pre
+produkt, ktorý spustil daný závoz. Plán ukazuje pokrytie po celom závoze a
+upozorní, ak dostupné lokácie nestačia na dosiahnutie cieľa. Cieľ musí byť
+väčší ako hranica spustenia návratu, aby ďalší závoz nevznikal okamžite znovu.
+
 Záložka ukazuje potrebu návratov v zvolenom horizonte. Neobmedzuje plán dennou
 dopravnou kapacitou, neplánuje nové nákupy ani čas prepravy. Nie je naviazaná
 na hypotetické presuny zo simulácie ani na rozmerové/GEOSIZE filtre vývozu.

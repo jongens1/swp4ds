@@ -43,12 +43,14 @@ def calendar_day(as_of, days):
 
 
 def build_return_plan(main, swap, four_ds, sales_days, fallback_monthly, buffer_days,
-                      horizon_days, as_of):
+                      horizon_days, as_of, primary_target_days=30):
     """SWAP and 4DS snapshots own their zones; never add their stock twice.
 
     Demand is per SKU, not repeated per location. Primary is consumed first,
     then SWAP. A recall always includes every SKU on the selected warehouse/location.
     """
+    if primary_target_days <= buffer_days:
+        raise ValueError('Cieľ zásoby primáru musí byť väčší než hranica spätného závozu.')
     primary = inventory(main, 'Množstvo na lokácií', 'Hlavný Excel')
     swaps = inventory(swap, 'Množstvo', 'SWAP Excel')
     remote = inventory(four_ds, 'Množstvo', '4DS.xlsx')
@@ -89,6 +91,8 @@ def build_return_plan(main, swap, four_ds, sales_days, fallback_monthly, buffer_
     summary.loc[summary['Náhradná predajnosť'], 'Denný predaj (ks)'] = fallback_monthly / 30
     summary['Primár + SWAP (ks)'] = summary['Primár (ks)'] + summary['SWAP (ks)']
     ads = summary['Denný predaj (ks)']
+    summary['Cieľ primáru (dni)'] = primary_target_days
+    summary['Cieľ primáru (ks)'] = np.ceil(ads * primary_target_days - 1e-9)
     summary['Primár vydrží (dni)'] = summary['Primár (ks)'] / ads
     summary['SWAP samostatne (dni)'] = summary['SWAP (ks)'] / ads
     summary['Primár + SWAP vydrží (dni)'] = summary['Primár + SWAP (ks)'] / ads
@@ -118,13 +122,30 @@ def build_return_plan(main, swap, four_ds, sales_days, fallback_monthly, buffer_
             del pending[key]
     contents = {key: list(zip(group['Produkt'], group['Množstvo'])) for key, group in pending.items()}
     rates = ads.to_dict()
+    primary_balance = summary['Primár (ks)'].to_dict()
+    swap_balance = summary['SWAP (ks)'].to_dict()
+    last_day = {sku: 0 for sku in summary.index}
+    by_sku = {}
+    for key, items in contents.items():
+        for sku, _ in items:
+            by_sku.setdefault(sku, set()).add(key)
+
+    def advance(sku, day):
+        consumed = rates[sku] * (day - last_day[sku])
+        swap_balance[sku] = max(0, swap_balance[sku] - max(0, consumed - primary_balance[sku]))
+        primary_balance[sku] = max(0, primary_balance[sku] - consumed)
+        last_day[sku] = day
+
     def next_due(key):
         return min(max(0, projected[sku] / rates[sku] - buffer_days) for sku, _ in contents[key])
     queue = [(next_due(key), key) for key in pending]
     heapq.heapify(queue)
     ordinal = 0
+    batch = 0
     while queue:
         due, key = heapq.heappop(queue)
+        if key not in pending:
+            continue
         # Previous recalls only increase coverage. Refresh stale priorities lazily.
         current_due = next_due(key)
         if current_due > due:
@@ -132,18 +153,42 @@ def build_return_plan(main, swap, four_ds, sales_days, fallback_monthly, buffer_
             continue
         if due > horizon_days:
             break
-        ordinal += 1
-        for sku, quantity in contents[key]:
-            plan_rows.append({
-                'Poradie lokácie': ordinal,
-                'Presun najneskôr': calendar_day(as_of, due),
-                'O dní': math.floor(due + 1e-9), 'Sklad': key[0], 'Lokace': key[1],
-                'Produkt': sku, 'Presunúť (ks)': quantity,
-                'Rozsah presunu': 'Celá lokácia – všetky uvedené produkty',
-            })
-            projected[sku] += quantity
+        driver = min((sku for sku, _ in contents[key]),
+                     key=lambda sku: (max(0, projected[sku] / rates[sku] - buffer_days), sku))
+        day = math.floor(due + 1e-9)
+        advance(driver, day)
+        target_units = math.ceil(rates[driver] * primary_target_days - 1e-9)
+        batch += 1
+        batch_rows = []
+        # Refill the primary itself; SWAP stock affects the trigger, not the target.
+        while by_sku[driver] and primary_balance[driver] < target_units - 1e-9:
+            selected = key if key in by_sku[driver] else min(by_sku[driver])
+            del pending[selected]
+            ordinal += 1
+            for sku, quantity in contents[selected]:
+                advance(sku, day)
+                primary_balance[sku] += quantity
+                projected[sku] += quantity
+                by_sku[sku].discard(selected)
+                batch_rows.append({
+                    'Závoz': batch, 'Doplňovaný produkt': driver,
+                    'Poradie lokácie': ordinal,
+                    'Presun najneskôr': calendar_day(as_of, day),
+                    'O dní': day, 'Sklad': selected[0], 'Lokace': selected[1],
+                    'Produkt': sku, 'Presunúť (ks)': quantity,
+                    'Cieľ primáru (dni)': primary_target_days,
+                    'Rozsah presunu': 'Celá lokácia – všetky uvedené produkty',
+                })
+        achieved = primary_balance[driver] >= target_units - 1e-9
+        for row in batch_rows:
+            row['Primár po závoze (ks)'] = primary_balance[row['Produkt']]
+            row['Primár po závoze (dni)'] = primary_balance[row['Produkt']] / rates[row['Produkt']]
+            row['Výsledok závozu'] = 'Cieľ dosiahnutý' if achieved else 'Nedostatok dostupnej zásoby v 4DS'
+        plan_rows.extend(batch_rows)
     plan = pd.DataFrame(plan_rows, columns=['Poradie lokácie', 'Presun najneskôr', 'O dní',
-                         'Sklad', 'Lokace', 'Produkt', 'Presunúť (ks)', 'Rozsah presunu'])
+                         'Sklad', 'Lokace', 'Produkt', 'Presunúť (ks)', 'Závoz', 'Doplňovaný produkt',
+                         'Cieľ primáru (dni)', 'Primár po závoze (ks)', 'Primár po závoze (dni)',
+                         'Výsledok závozu', 'Rozsah presunu'])
     summary.index.name = 'Produkt'
     return (summary.reset_index().sort_values('Prvý návrat o (dni)', na_position='last'),
             plan, (primary, swaps, remote), ignored_remote, blocked)
@@ -169,12 +214,17 @@ def render_return_tab(st, main, swap, uploaded, source_label, sales_days, fallba
         return
     st.caption(f'4DS dáta: {source_label or "4DS.xlsx (predvolený)"}')
     as_of = st.date_input('Dátum stavu zásob', value=datetime.now(ZoneInfo('Europe/Prague')).date(), key='return_as_of')
+    primary_target_days = st.number_input(
+        'Cieľová zásoba na primári po spätnom presune (dni)',
+        min_value=1, max_value=365, value=30, key='return_primary_target_days',
+        help='Po spustení návratu sa dopĺňaný produkt dovezie po celých lokáciách aspoň na toto pokrytie primáru. SWAP sa do cieľa nezapočítava.')
     st.markdown(f'**Predstih spätného presunu: {buffer_days} dní.** Používa hranicu spätného závozu '
                 'z ľavého panela. Termíny sú zaokrúhlené nadol na celý deň.')
     try:
         remote_input = pd.read_excel(source)
         summary, plan, zones, ignored, blocked = build_return_plan(
-            main, swap, remote_input, sales_days, fallback_monthly, buffer_days, horizon_days, as_of)
+            main, swap, remote_input, sales_days, fallback_monthly, buffer_days, horizon_days, as_of,
+            primary_target_days=primary_target_days)
     except (ValueError, OSError, ImportError) as error:
         st.error(f'Spätný presun: {error}')
         return
@@ -213,6 +263,9 @@ def render_return_tab(st, main, swap, uploaded, source_label, sales_days, fallba
     st.caption('SWAP samostatne = počet dní, ktoré pridá po spotrebovaní primáru. '
                'Prvý návrat je termín potreby daného SKU; spoločná lokácia môže byť v pláne vytiahnutá skôr kvôli inému produktu.')
     st.subheader(f'Plán celých lokácií na {horizon_days} dní')
+    st.markdown(f'**Cieľ po závoze: aspoň {primary_target_days} dní na primári dopĺňaného produktu.** '
+                'SWAP ovplyvňuje termín spustenia návratu, ale nezapočítava sa do cieľovej zásoby primáru. '
+                'Jeden závoz môže obsahovať viac celých lokácií. Pri zmiešanej lokácii sa ostatné produkty vezú spolu.')
     st.caption('Každá kombinácia Sklad + Lokace sa presúva celá a iba raz. '
                'Pri zmiešanej lokácii presuň všetky jej uvedené produkty spolu. '
                'Po každom návrate sa pokrytie prepočíta vrátane privezených kusov. '
@@ -220,6 +273,9 @@ def render_return_tab(st, main, swap, uploaded, source_label, sales_days, fallba
     if plan.empty:
         st.info('V zadanom horizonte nie je naplánovaná žiadna úplná lokácia. Skontroluj aj upozornenia na chýbajúce dáta.')
     else:
+        short_batches = plan.loc[plan['Výsledok závozu'].ne('Cieľ dosiahnutý'), ['Závoz']].drop_duplicates()
+        if not short_batches.empty:
+            st.warning(f'Pri {len(short_batches)} závozoch dostupné celé 4DS lokácie nestačia na cieľové pokrytie. Pozri Výsledok závozu.')
         st.dataframe(plan, hide_index=True, use_container_width=True)
         daily = plan.drop_duplicates(['Sklad', 'Lokace']).groupby('Presun najneskôr').size().rename('Celé lokácie').reset_index()
         st.dataframe(daily, hide_index=True, use_container_width=True)
