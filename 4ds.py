@@ -5,6 +5,7 @@ import io
 import os
 import plotly.express as px
 import plotly.graph_objects as go
+from return_flow import render_return_tab
 
 # Konfigurácia stránky - STÁLY NÁZOV
 st.set_page_config(
@@ -29,6 +30,12 @@ uploaded_file = st.sidebar.file_uploader(
 uploaded_swap_file = st.sidebar.file_uploader(
     "2. Nahraj SWAP Excel (voliteľné)", 
     type=["xlsx", "xls"]
+)
+
+uploaded_4ds_file = st.sidebar.file_uploader(
+    "3. Nahraj 4DS Excel (aktuálna zásoba)",
+    type=["xlsx"],
+    help="Bez nahratia sa použije 4DS.xlsx z koreňa repozitára."
 )
 
 st.sidebar.divider()
@@ -248,7 +255,18 @@ if df is not None:
             # =========================================================================
             # TABULKOVÉ ZOBRAZENIE CEZ ZÁLOŽKY (TABS)
             # =========================================================================
-            tab1, tab2 = st.tabs(["📦 Návrh presunu do 4DS", "🔮 Simulácia & Prioritný tok"])
+            tab1, tab2, tab3 = st.tabs([
+                "📦 Návrh presunu do 4DS", "🔮 Simulácia & Prioritný tok",
+                "Riadenie presunu späť zo 4DS"
+            ])
+
+            with tab3:
+                render_return_tab(
+                    st, df, swap_df, uploaded_4ds_file,
+                    uploaded_4ds_file.name if uploaded_4ds_file is not None else "",
+                    sales_period_days, fallback_monthly_sales,
+                    recall_trigger_doh, sim_horizon_days
+                )
 
             with tab1:
                 # === METRIKY ===
