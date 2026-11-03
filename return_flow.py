@@ -37,7 +37,7 @@ def calendar_day(as_of, days):
     if pd.isna(days) or not math.isfinite(days):
         return None
     try:
-        return as_of + timedelta(days=math.floor(max(0, days)))
+        return as_of + timedelta(days=math.floor(max(0, days) + 1e-9))
     except OverflowError:
         return None
 
@@ -137,7 +137,7 @@ def build_return_plan(main, swap, four_ds, sales_days, fallback_monthly, buffer_
             plan_rows.append({
                 'Poradie lokácie': ordinal,
                 'Presun najneskôr': calendar_day(as_of, due),
-                'O dní': math.floor(due), 'Sklad': key[0], 'Lokace': key[1],
+                'O dní': math.floor(due + 1e-9), 'Sklad': key[0], 'Lokace': key[1],
                 'Produkt': sku, 'Presunúť (ks)': quantity,
                 'Rozsah presunu': 'Celá lokácia – všetky uvedené produkty',
             })
@@ -184,11 +184,16 @@ def render_return_tab(st, main, swap, uploaded, source_label, sales_days, fallba
                'Predpoklad: najskôr sa spotrebuje primár, potom SWAP; bez nových príjmov.')
     if ignored:
         st.warning(f'4DS.xlsx: {ignored} riadkov mimo 4D1-* a SHUTTLE-SWAP sa nezapočítalo.')
-    if summary['Denný predaj (ks)'].isna().any():
-        st.warning('Niektorým produktom chýba predajnosť v hlavnom Exceli. Termíny pre ne nie sú vypočítané.')
+    missing_sales = summary[summary['Denný predaj (ks)'].isna() & summary['4DS (ks)'].gt(0)]
+    if not missing_sales.empty:
+        st.warning(f'{len(missing_sales)} produktom v 4DS chýba predajnosť v hlavnom Exceli. '
+                   'Doplň ich do hlavného exportu; ich termíny zatiaľ nie sú vypočítané.')
     if blocked:
         st.warning(f'{len(blocked)} celých 4DS lokácií má produkt bez predajnosti a nie je zahrnutých do plánu.')
-        st.dataframe(pd.DataFrame(blocked, columns=['Sklad', 'Lokace']), hide_index=True)
+    if not missing_sales.empty or blocked:
+        with st.expander('Produkty bez predajnosti a vynechané lokácie'):
+            st.dataframe(missing_sales[['Produkt', 'Primár (ks)', 'SWAP (ks)', '4DS (ks)']], hide_index=True)
+            st.dataframe(pd.DataFrame(blocked, columns=['Sklad', 'Lokace']), hide_index=True)
     if summary['Náhradná predajnosť'].any():
         st.caption(f'Pri nulovom alebo zápornom predaji je použitý odhad {fallback_monthly} ks/mesiac podľa nastavenia vľavo.')
     cols = st.columns(3)
@@ -197,7 +202,14 @@ def render_return_tab(st, main, swap, uploaded, source_label, sales_days, fallba
             st.metric(label, f'{data["Množstvo"].sum():,.0f} ks'.replace(',', ' '))
             st.caption(f'{data["Produkt"].nunique()} SKU · {len(data[["Sklad", "Lokace"]].drop_duplicates())} lokácií')
     st.subheader('Kedy dôjde zásoba a kedy začať s návratom')
-    st.dataframe(summary, hide_index=True, use_container_width=True)
+    only_remote = st.checkbox('Zobraziť iba produkty so zásobou v 4DS', value=True, key='return_only_remote')
+    visible = summary[summary['4DS (ks)'].gt(0)] if only_remote else summary
+    first_cols = ['Produkt', 'Stav', 'Primár (ks)', 'SWAP (ks)', '4DS (ks)',
+                  'Primár dôjde', 'Primár + SWAP dôjde', 'Prvý návrat najneskôr']
+    display_cols = first_cols + [c for c in summary if c not in first_cols]
+    st.dataframe(visible[display_cols], hide_index=True, use_container_width=True,
+                 column_config={c: st.column_config.NumberColumn(format='%.1f')
+                                for c in summary if '(dni)' in c or c == 'Denný predaj (ks)'})
     st.caption('SWAP samostatne = počet dní, ktoré pridá po spotrebovaní primáru. '
                'Prvý návrat je termín potreby daného SKU; spoločná lokácia môže byť v pláne vytiahnutá skôr kvôli inému produktu.')
     st.subheader(f'Plán celých lokácií na {horizon_days} dní')
