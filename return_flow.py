@@ -101,7 +101,7 @@ def build_return_plan(main, swap, four_ds, sales_days, fallback_monthly, buffer_
     summary['Stav'] = np.select([
         ads.isna(),
         summary['Primár + SWAP vydrží (dni)'].le(buffer_days) & summary['4DS (ks)'].eq(0),
-        summary['Prvý návrat o (dni)'].eq(0),
+        summary['Prvý návrat o (dni)'].lt(1 - 1e-9),
         summary['Prvý návrat o (dni)'].le(horizon_days),
     ], ['Chýba predajnosť', 'Nízka zásoba – bez zásoby v 4DS', 'Presunúť teraz', 'Presun v horizonte'], default='Bez presunu v horizonte')
 

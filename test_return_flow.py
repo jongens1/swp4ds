@@ -68,6 +68,13 @@ class ReturnFlowTests(unittest.TestCase):
         self.assertEqual(summary.iloc[0]['Prvý návrat najneskôr'], date(2026, 11, 26))
         self.assertEqual(plan.iloc[0]['O dní'], 23)
 
+    def test_fractional_deadline_today_is_urgent(self):
+        summary, plan, *_ = self.calculate(
+            main_rows([('A', 'P1', 'X', 75, 300)]), location_rows([]),
+            location_rows([('A', '4D1-01', 'X', 100)]))
+        self.assertEqual(summary.iloc[0]['Stav'], 'Presunúť teraz')
+        self.assertEqual(plan.iloc[0]['O dní'], 0)
+
     def test_invalid_quantities_and_conflicting_sales(self):
         for qty in [-1, 'bad', None]:
             with self.subTest(qty=qty), self.assertRaises(ValueError):
